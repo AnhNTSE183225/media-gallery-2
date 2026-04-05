@@ -101,6 +101,16 @@ function Get-SbtExecutable {
   throw "Could not locate sbt.bat. Install sbt or Coursier and ensure sbt is available."
 }
 
+function Get-TimestampedLogPath {
+  $logsDir = Join-Path $root "logs"
+  if (-not (Test-Path $logsDir)) {
+    New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+  }
+  
+  $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+  return Join-Path $logsDir "log-$timestamp.log"
+}
+
 function Assert-DockerAvailable {
   $docker = Get-Command docker -CommandType Application -ErrorAction SilentlyContinue |
     Select-Object -First 1
@@ -142,10 +152,35 @@ function Wait-ContainerHealthy {
   throw "Service '$Service' did not become healthy in time."
 }
 
+function Wait-LocalPortListening {
+  param(
+    [int]$Port,
+    [int]$ExpectedProcessId = 0,
+    [int]$TimeoutSeconds = 120
+  )
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    if ($ExpectedProcessId -gt 0 -and -not (Test-ProcessRunning -ProcessId $ExpectedProcessId)) {
+      throw "Backend process exited before opening port $Port."
+    }
+
+    $listeners = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
+    if ($listeners) {
+      Write-Host "Backend port $Port is listening." -ForegroundColor Green
+      return
+    }
+
+    Write-Host "Waiting for backend to listen on port $Port..." -ForegroundColor DarkGray
+    Start-Sleep -Seconds 1
+  }
+
+  throw "Timeout waiting for backend port $Port to become ready."
+}
+
 function Ensure-DockerInfra {
   Write-Host "Ensuring Docker infrastructure is up..." -ForegroundColor Green
   $composeFile = Join-Path $serverDir "docker-compose.yml"
-  Write-Host "[Debug] Docker compose file: $composeFile" -ForegroundColor DarkGray
   docker compose -f $composeFile up -d | Out-Null
 
   Wait-ContainerHealthy -Service "postgres"
@@ -160,7 +195,8 @@ function Start-ManagedProcess {
     [string]$WorkingDirectory,
     [string]$FileName,
     [string]$Arguments,
-    [hashtable]$EnvironmentOverrides = @{}
+    [hashtable]$EnvironmentOverrides = @{},
+    [string]$LogFilePath = ""
   )
 
   $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -186,15 +222,23 @@ function Start-ManagedProcess {
 
   $outEvent = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -Action {
     if ($EventArgs.Data) {
-      Write-Host "[$($Event.MessageData.Prefix)] $($EventArgs.Data)" -ForegroundColor $Event.MessageData.Color
+      $message = "[$($Event.MessageData.Prefix)] $($EventArgs.Data)"
+      Write-Host $message -ForegroundColor $Event.MessageData.Color
+      if ($Event.MessageData.LogFile) {
+        $message | Add-Content -Path $Event.MessageData.LogFile -Encoding UTF8
+      }
     }
-  } -MessageData @{ Prefix = $Prefix; Color = $Color }
+  } -MessageData @{ Prefix = $Prefix; Color = $Color; LogFile = $LogFilePath }
 
   $errEvent = Register-ObjectEvent -InputObject $process -EventName ErrorDataReceived -Action {
     if ($EventArgs.Data) {
-      Write-Host "[$($Event.MessageData.Prefix)] $($EventArgs.Data)" -ForegroundColor Red
+      $message = "[$($Event.MessageData.Prefix)] $($EventArgs.Data)"
+      Write-Host $message -ForegroundColor Red
+      if ($Event.MessageData.LogFile) {
+        $message | Add-Content -Path $Event.MessageData.LogFile -Encoding UTF8
+      }
     }
-  } -MessageData @{ Prefix = $Prefix; Color = $Color }
+  } -MessageData @{ Prefix = $Prefix; Color = $Color; LogFile = $LogFilePath }
 
   $process.BeginOutputReadLine()
   $process.BeginErrorReadLine()
@@ -292,13 +336,9 @@ try {
 
   $sbtExecutable = Get-SbtExecutable
   $npmExecutable = Get-NpmExecutable
-  Write-Host "[Debug] Root directory: $root" -ForegroundColor DarkGray
-  Write-Host "[Debug] Server directory: $serverDir" -ForegroundColor DarkGray
-  Write-Host "[Debug] Client directory: $clientDir" -ForegroundColor DarkGray
-  Write-Host "[Debug] sbt executable: $sbtExecutable" -ForegroundColor DarkGray
-  Write-Host "[Debug] npm executable: $npmExecutable" -ForegroundColor DarkGray
-  Write-Host "[Debug] Inherited JAVA_TOOL_OPTIONS: '$env:JAVA_TOOL_OPTIONS'" -ForegroundColor DarkGray
-  Write-Host "[Debug] Starting backend command: $sbtExecutable -Dsbt.supershell=false -Dsbt.log.noformat=true --batch run" -ForegroundColor DarkGray
+  $logFilePath = Get-TimestampedLogPath
+
+  Write-Host "Logs will be exported to: $logFilePath" -ForegroundColor DarkGray
 
   $backend = Start-ManagedProcess `
     -Name "Backend" `
@@ -306,10 +346,12 @@ try {
     -Color "Cyan" `
     -WorkingDirectory $serverDir `
     -FileName $sbtExecutable `
-    -Arguments "-Dsbt.supershell=false -Dsbt.log.noformat=true --batch run"
+    -Arguments "-Dsbt.supershell=false -Dsbt.log.noformat=true --batch run" `
+    -LogFilePath $logFilePath
   $script:backendRef = $backend
 
-  Write-Host "[Debug] Starting frontend command: $npmExecutable run dev" -ForegroundColor DarkGray
+  Wait-LocalPortListening -Port 3001 -ExpectedProcessId $backend.Pid
+
   $frontend = Start-ManagedProcess `
     -Name "Frontend" `
     -Prefix "Frontend" `
@@ -317,7 +359,8 @@ try {
     -WorkingDirectory $clientDir `
     -FileName $npmExecutable `
     -Arguments "run dev" `
-    -EnvironmentOverrides @{ SASS_SILENCE_DEPRECATIONS = "legacy-js-api" }
+    -EnvironmentOverrides @{ SASS_SILENCE_DEPRECATIONS = "legacy-js-api" } `
+    -LogFilePath $logFilePath
   $script:frontendRef = $frontend
 
   Write-Host "Press Ctrl+C to stop backend and frontend. Docker stays running." -ForegroundColor Yellow

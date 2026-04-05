@@ -5,6 +5,7 @@ import { propsModule } from "snabbdom/build/modules/props.js";
 import { styleModule } from "snabbdom/build/modules/style.js";
 import { h } from "snabbdom/build/h.js";
 import type { VNode } from "snabbdom/build/vnode.js";
+import { logger } from "./logger";
 import "./styles/app.scss";
 
 type BootstrapStatus = {
@@ -66,6 +67,18 @@ type AssetsResponse = {
   };
 };
 
+type StartupState = {
+  ready: boolean;
+  message: string;
+  attempts: number;
+  checks: {
+    bootstrap: boolean;
+    profiles: boolean;
+    appConfig: boolean;
+    assets: boolean;
+  };
+};
+
 type UiState = {
   bootstrap: BootstrapStatus;
   scan: ScanStatus;
@@ -84,6 +97,7 @@ type UiState = {
   selectedAssetIndex: number;
   selectedStoryPageIndex: number;
   scanMessage: string;
+  startup: StartupState;
 };
 
 const patch = init([classModule, propsModule, styleModule, eventListenersModule]);
@@ -95,6 +109,7 @@ if (!mount) {
 
 let vnode: VNode = mount as unknown as VNode;
 let scanPollTimer: number | null = null;
+let startupPollTimer: number | null = null;
 let lastWheelAt = 0;
 
 const state: UiState = {
@@ -131,7 +146,18 @@ const state: UiState = {
   assets: [],
   selectedAssetIndex: -1,
   selectedStoryPageIndex: 0,
-  scanMessage: ""
+  scanMessage: "",
+  startup: {
+    ready: false,
+    message: "Connecting to backend...",
+    attempts: 0,
+    checks: {
+      bootstrap: false,
+      profiles: false,
+      appConfig: false,
+      assets: false
+    }
+  }
 };
 
 function mediaUrl(path: string, thumbnail: boolean): string {
@@ -346,30 +372,125 @@ function ensureScanPolling(): void {
   }, 1200);
 }
 
-async function loadBootstrapStatus(): Promise<void> {
+function stopStartupPolling(): void {
+  if (startupPollTimer !== null) {
+    window.clearInterval(startupPollTimer);
+    startupPollTimer = null;
+  }
+}
+
+function updateStartupMessage(): void {
+  const checks = state.startup.checks;
+
+  if (!checks.bootstrap) {
+    state.startup.message = "Connecting to backend...";
+    return;
+  }
+
+  if (state.scan.status === "running") {
+    state.startup.message = `Scanning media index: ${state.scan.percentage}% (${state.scan.processedArtists}/${state.scan.totalArtists})`;
+    return;
+  }
+
+  if (!checks.profiles || !checks.appConfig || !checks.assets) {
+    state.startup.message = "Loading gallery metadata...";
+    return;
+  }
+
+  state.startup.message = "Preparing interface...";
+}
+
+function finalizeStartupIfReady(): void {
+  const checks = state.startup.checks;
+  if (checks.bootstrap && checks.profiles && checks.appConfig && checks.assets) {
+    state.startup.ready = true;
+    stopStartupPolling();
+  }
+}
+
+async function runStartupTick(): Promise<void> {
+  if (state.startup.ready) {
+    stopStartupPolling();
+    return;
+  }
+
+  state.startup.attempts += 1;
+  logger.debug("[Startup] tick", {
+    attempts: state.startup.attempts,
+    checks: state.startup.checks
+  });
+
+  if (!state.startup.checks.bootstrap) {
+    const bootstrapOk = await loadBootstrapStatus();
+    if (bootstrapOk) {
+      state.startup.checks.bootstrap = true;
+      logger.debug("[Startup] backend reachable");
+    } else {
+      logger.debug("[Startup] backend not reachable yet");
+    }
+
+    updateStartupMessage();
+    render();
+    return;
+  }
+
+  await loadScanStatus();
+
+  if (!state.startup.checks.profiles) {
+    state.startup.checks.profiles = await loadProfiles();
+    logger.debug("[Startup] profiles loaded", { ok: state.startup.checks.profiles });
+  } else if (!state.startup.checks.appConfig) {
+    state.startup.checks.appConfig = await loadAppConfig();
+    logger.debug("[Startup] app config loaded", { ok: state.startup.checks.appConfig });
+  } else if (!state.startup.checks.assets) {
+    state.startup.checks.assets = await loadAssets();
+    logger.debug("[Startup] assets loaded", { ok: state.startup.checks.assets });
+  }
+
+  updateStartupMessage();
+  finalizeStartupIfReady();
+  render();
+}
+
+function ensureStartupPolling(): void {
+  if (state.startup.ready || startupPollTimer !== null) {
+    return;
+  }
+
+  startupPollTimer = window.setInterval(() => {
+    void runStartupTick();
+  }, 1000);
+
+  void runStartupTick();
+}
+
+async function loadBootstrapStatus(): Promise<boolean> {
   try {
+    logger.debug("[Startup] requesting /v1/bootstrap-status");
     const res = await fetch("/v1/bootstrap-status");
     if (!res.ok) {
-      state.bootstrap.status = "error";
-      state.bootstrap.message = `Bootstrap endpoint returned ${res.status}`;
-      render();
-      return;
+      logger.warn("[Startup] bootstrap-status not ready", { status: res.status });
+      state.bootstrap.status = "running";
+      state.bootstrap.message = `Waiting for backend (${res.status})`;
+      return false;
     }
 
     const data = (await res.json()) as BootstrapStatus;
     state.bootstrap = data;
-    render();
-  } catch {
-    state.bootstrap.status = "error";
-    state.bootstrap.message = "Cannot connect to backend";
-    render();
+    logger.debug("[Startup] bootstrap-status ready", data);
+    return true;
+  } catch (error) {
+    logger.warn("[Startup] bootstrap-status failed", error);
+    state.bootstrap.status = "running";
+    state.bootstrap.message = "Connecting to backend";
+    return false;
   }
 }
 
-async function loadScanStatus(): Promise<void> {
+async function loadScanStatus(): Promise<boolean> {
   try {
     const res = await fetch("/v1/scan-status");
-    if (!res.ok) return;
+    if (!res.ok) return false;
 
     const data = (await res.json()) as ScanStatus;
     state.scan = data;
@@ -385,21 +506,25 @@ async function loadScanStatus(): Promise<void> {
     }
 
     render();
+    return true;
   } catch {
     // Keep shell resilient during backend startup.
+    return false;
   }
 }
 
-async function loadProfiles(): Promise<void> {
+async function loadProfiles(): Promise<boolean> {
   try {
     const res = await fetch("/v1/profiles");
-    if (!res.ok) return;
+    if (!res.ok) return false;
     const data = (await res.json()) as ProfilesResponse;
     state.activeProfile = data.activeProfile;
     state.profiles = data.profiles;
     render();
+    return true;
   } catch {
     // Keep shell resilient during backend startup.
+    return false;
   }
 }
 
@@ -457,21 +582,23 @@ async function triggerScan(): Promise<void> {
   }
 }
 
-async function loadAppConfig(): Promise<void> {
+async function loadAppConfig(): Promise<boolean> {
   try {
     const res = await fetch("/v1/app-config");
-    if (!res.ok) return;
+    if (!res.ok) return false;
     const data = (await res.json()) as AppConfigResponse;
     state.itemsPerPage = data.itemsPerPage;
     state.videoSkipSeconds = data.videoSkipSeconds;
     state.keybinds = data.keybinds;
     render();
+    return true;
   } catch {
     // Keep shell resilient during backend startup.
+    return false;
   }
 }
 
-async function loadAssets(): Promise<void> {
+async function loadAssets(): Promise<boolean> {
   try {
     const params = new URLSearchParams();
     if (state.searchText.trim()) params.set("text", state.searchText.trim());
@@ -480,7 +607,7 @@ async function loadAssets(): Promise<void> {
     params.set("limit", String(state.itemsPerPage));
 
     const res = await fetch(`/v1/assets?${params.toString()}`);
-    if (!res.ok) return;
+  if (!res.ok) return false;
 
     const data = (await res.json()) as AssetsResponse;
     state.assets = data.items;
@@ -493,12 +620,57 @@ async function loadAssets(): Promise<void> {
 
     syncUrlState();
     render();
+    return true;
   } catch {
     // Keep shell resilient during backend startup.
+    return false;
   }
 }
 
 function view(model: UiState): VNode {
+  if (!model.startup.ready) {
+    const checkItems = [
+      { label: "Backend reachable", ok: model.startup.checks.bootstrap },
+      { label: "Profiles loaded", ok: model.startup.checks.profiles },
+      { label: "App config loaded", ok: model.startup.checks.appConfig },
+      { label: "Initial assets loaded", ok: model.startup.checks.assets }
+    ];
+
+    return h("main.shell", [
+      h("section.startup", [
+        h("h1.h1", "Media Gallery 2"),
+        h("p.muted", model.startup.message),
+        h("div.startupBar", [
+          h("div.startupBarFill", {
+            style: {
+              width: `${Math.round((checkItems.filter((item) => item.ok).length / checkItems.length) * 100)}%`
+            }
+          })
+        ]),
+        h(
+          "ul.startupChecks",
+          checkItems.map((item) =>
+            h(
+              "li",
+              {
+                class: {
+                  ok: item.ok
+                }
+              },
+              `${item.ok ? "Ready" : "Waiting"} - ${item.label}`
+            )
+          )
+        ),
+        model.scan.status === "running"
+          ? h(
+              "p.muted",
+              `Scan progress: ${model.scan.percentage}% (${model.scan.processedArtists}/${model.scan.totalArtists}) ${model.scan.currentArtist}`
+            )
+          : h("p.muted", `Startup attempts: ${model.startup.attempts}`)
+      ])
+    ]);
+  }
+
   const profileOptions = model.profiles.map((profile) =>
     h(
       "option",
@@ -576,11 +748,11 @@ function view(model: UiState): VNode {
                     });
                   })()
                 : isVideoPath(asset.path)
-                  ? h("video.thumb", {
+                  ? h("img.thumb", {
                       props: {
                         src: mediaUrl(asset.path, true),
-                        muted: true,
-                        preload: "metadata"
+                        alt: `${asset.artist} / ${asset.name}`,
+                        loading: "lazy"
                       }
                     })
                 : h("img.thumb", {
@@ -590,12 +762,14 @@ function view(model: UiState): VNode {
                       loading: "lazy"
                     }
                   }),
-              asset.pages && asset.pages.length > 0
-                ? h("span.storyBadge", `Story ${asset.pages.length}`)
-                : null,
               h("div.assetMeta", [
-                h("strong", asset.artist),
-                h("span", asset.name)
+                  h("div.assetTitleRow", [
+                    h("strong", asset.name),
+                    asset.pages && asset.pages.length > 0
+                      ? h("span.storyCountBadge", String(asset.pages.length))
+                      : null
+                  ]),
+                  h("span.assetArtist", asset.artist)
               ])
             ]
           )
@@ -776,7 +950,4 @@ window.addEventListener("popstate", () => {
 
 applyUrlState();
 render();
-void loadBootstrapStatus();
-void loadProfiles();
-void loadAppConfig().then(() => loadAssets());
-void loadScanStatus();
+ensureStartupPolling();

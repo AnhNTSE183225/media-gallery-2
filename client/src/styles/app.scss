@@ -27,6 +27,53 @@ body {
   padding: 1.2rem 1rem 2rem;
 }
 
+.startup {
+  max-width: 720px;
+  margin: 4rem auto 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 90%, black 10%);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.startupBar {
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #0a121d;
+  overflow: hidden;
+}
+
+.startupBarFill {
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, #3c8fb0, var(--accent-strong));
+  transition: width 0.2s ease;
+}
+
+.startupChecks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.startupChecks li {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  color: var(--muted);
+}
+
+.startupChecks li.ok {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line) 45%);
+}
+
 .top {
   display: flex;
   gap: 1rem;
@@ -143,14 +190,43 @@ button:hover {
   padding: 0.5rem 0.6rem 0.6rem;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.3rem;
 }
 
-.assetMeta strong,
-.assetMeta span {
+.assetTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.assetTitleRow strong,
+.assetArtist {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.assetTitleRow strong {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.assetArtist {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.storyCountBadge {
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line) 45%);
+  border-radius: 999px;
+  padding: 0.08rem 0.45rem;
+  color: var(--accent-strong);
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1.2;
+  background: color-mix(in srgb, var(--accent) 12%, transparent 88%);
 }
 
 .progress {

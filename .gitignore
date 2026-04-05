@@ -3,3 +3,5 @@ client/dist/
 server/target/
 server/project/
 server/config.yaml
+server/.cache/
+*.log

@@ -23,11 +23,19 @@ import org.typelevel.ci.CIString
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.AtomicMoveNotSupportedException
+import java.security.MessageDigest
+import java.awt.RenderingHints
+import java.awt.image.BufferedImage
+import javax.imageio.ImageIO
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.Timestamp
+import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.UUID
 import scala.jdk.CollectionConverters._
@@ -164,8 +172,146 @@ object Main extends IOApp.Simple {
 
   private val bootStartedAt = Instant.now().toString
   private val digitPattern: Regex = "[0-9]+".r
+  private val thumbnailCacheDirectory = Path.of(".cache", "thumbnails")
+  private val thumbnailCaptureSecond = 1
+  private val thumbnailWidth = 480
+  private val thumbnailHeight = 640
+  private val videoExtensions = Set(".mp4", ".webm", ".mov", ".m4v", ".mkv", ".avi")
+  private val imageExtensions = Set(".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 
   private def nowIso: String = Instant.now().toString
+
+  private def isTruthy(raw: String): Boolean =
+    raw.trim.toLowerCase match {
+      case "1" | "true" | "yes" | "on" => true
+      case _                                => false
+    }
+
+  private def fileExtension(path: Path): String = {
+    val name = path.getFileName.toString
+    val dot = name.lastIndexOf('.')
+    if (dot >= 0) name.substring(dot).toLowerCase else ""
+  }
+
+  private def isVideoFile(path: Path): Boolean =
+    videoExtensions.contains(fileExtension(path))
+
+  private def isImageFile(path: Path): Boolean =
+    imageExtensions.contains(fileExtension(path))
+
+  private def sha256Hex(value: String): String = {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8))
+    bytes.map("%02x".format(_)).mkString
+  }
+
+  private def cacheVideoThumbnail(source: Path): IO[Option[Path]] =
+    IO.blocking {
+      Files.createDirectories(thumbnailCacheDirectory)
+      val attrs = Files.readAttributes(source, classOf[BasicFileAttributes])
+      val cacheKey = sha256Hex(s"${source.toAbsolutePath.normalize()}|${attrs.lastModifiedTime().toMillis}|${attrs.size()}")
+      val target = thumbnailCacheDirectory.resolve(s"$cacheKey.jpg")
+
+      if (Files.exists(target) && Files.size(target) > 0) {
+        Logger.debug(s"[Media] video thumbnail cache hit: source=${source.toAbsolutePath.normalize()} target=$target")
+        Some(target)
+      } else {
+        Logger.debug(s"[Media] video thumbnail cache miss: source=${source.toAbsolutePath.normalize()} target=$target")
+        def captureAt(second: Int): Boolean = {
+          val temp = thumbnailCacheDirectory.resolve(s"$cacheKey-${UUID.randomUUID()}.tmp.jpg")
+          val command = List(
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-ss",
+            second.toString,
+            "-i",
+            source.toString,
+            "-frames:v",
+            "1",
+            "-vf",
+            s"scale=$thumbnailWidth:-1:force_original_aspect_ratio=decrease",
+            temp.toString
+          )
+          val process = new ProcessBuilder(command*).start()
+          val exited = process.waitFor()
+          if (exited == 0 && Files.exists(temp) && Files.size(temp) > 0) {
+            try {
+              Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch {
+              case _: AtomicMoveNotSupportedException =>
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
+            }
+            Logger.debug(s"[Media] video thumbnail generated: source=${source.toAbsolutePath.normalize()} second=$second target=$target")
+            true
+          } else {
+            if (Files.exists(temp)) Files.delete(temp)
+            Logger.debug(s"[Media] video thumbnail generation failed: source=${source.toAbsolutePath.normalize()} second=$second exitCode=$exited")
+            false
+          }
+        }
+
+        if (captureAt(thumbnailCaptureSecond) || captureAt(0)) Some(target)
+        else None
+      }
+    }
+
+  private def cacheImageThumbnail(source: Path): IO[Option[Path]] =
+    IO.blocking {
+      Files.createDirectories(thumbnailCacheDirectory)
+      val attrs = Files.readAttributes(source, classOf[BasicFileAttributes])
+      val cacheKey = sha256Hex(s"img|${source.toAbsolutePath.normalize()}|${attrs.lastModifiedTime().toMillis}|${attrs.size()}")
+      val target = thumbnailCacheDirectory.resolve(s"$cacheKey.jpg")
+
+      if (Files.exists(target) && Files.size(target) > 0) {
+        Logger.debug(s"[Media] image thumbnail cache hit: source=${source.toAbsolutePath.normalize()} target=$target")
+        Some(target)
+      } else {
+        Logger.debug(s"[Media] image thumbnail cache miss: source=${source.toAbsolutePath.normalize()} target=$target")
+        val sourceImage = ImageIO.read(source.toFile)
+        if (sourceImage == null || sourceImage.getWidth <= 0 || sourceImage.getHeight <= 0) {
+          Logger.debug(s"[Media] image thumbnail decode failed: source=${source.toAbsolutePath.normalize()}")
+          None
+        } else {
+          val widthScale = thumbnailWidth.toDouble / sourceImage.getWidth.toDouble
+          val heightScale = thumbnailHeight.toDouble / sourceImage.getHeight.toDouble
+          val scale = Math.min(widthScale, heightScale)
+          val targetWidth = Math.max(1, Math.round(sourceImage.getWidth * scale).toInt)
+          val targetHeight = Math.max(1, Math.round(sourceImage.getHeight * scale).toInt)
+
+          val resized = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_RGB)
+          val graphics = resized.createGraphics()
+          try {
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+            graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            graphics.drawImage(sourceImage, 0, 0, targetWidth, targetHeight, null)
+          } finally {
+            graphics.dispose()
+          }
+
+          val temp = thumbnailCacheDirectory.resolve(s"$cacheKey-${UUID.randomUUID()}.tmp.jpg")
+          val wrote = ImageIO.write(resized, "jpg", temp.toFile)
+          if (!wrote || !Files.exists(temp) || Files.size(temp) <= 0) {
+            if (Files.exists(temp)) Files.delete(temp)
+            Logger.debug(s"[Media] image thumbnail write failed: source=${source.toAbsolutePath.normalize()}")
+            None
+          } else {
+            try {
+              Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch {
+              case _: AtomicMoveNotSupportedException =>
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
+            }
+            Logger.debug(s"[Media] image thumbnail generated: source=${source.toAbsolutePath.normalize()} target=$target size=${targetWidth}x${targetHeight}")
+            Some(target)
+          }
+        }
+      }
+    }
 
   private def naturalKey(value: String): String =
     digitPattern.replaceAllIn(value.toLowerCase, matched =>
@@ -579,10 +725,11 @@ object Main extends IOApp.Simple {
             val dot = fileName.lastIndexOf('.')
             val name = if (dot > 0) fileName.substring(0, dot) else fileName
             val folders = parts.dropRight(1)
+            val artistFolders = folders.drop(1)
 
-            val firstStoryIndex = folders.indexWhere(folder => !isAllowedTag(folder, allowedTagSet))
+            val firstStoryIndex = artistFolders.indexWhere(folder => !isAllowedTag(folder, allowedTagSet))
             if (firstStoryIndex < 0) {
-              val tags = folders.map(_.toLowerCase).distinct
+              val tags = artistFolders.map(_.toLowerCase).distinct
               standaloneAssets += IndexedAsset(
                 artist = artist,
                 name = name,
@@ -592,9 +739,9 @@ object Main extends IOApp.Simple {
                 pages = None
               )
             } else {
-              val storyName = folders(firstStoryIndex)
-              val storyTags = folders.take(firstStoryIndex).map(_.toLowerCase).distinct :+ "Story"
-              val storyKey = folders.take(firstStoryIndex + 1).mkString("/")
+              val storyName = artistFolders(firstStoryIndex)
+              val storyTags = artistFolders.take(firstStoryIndex).map(_.toLowerCase).distinct :+ "story"
+              val storyKey = (artist :: artistFolders.take(firstStoryIndex + 1)).mkString("/")
               val draft = storyAssets.getOrElseUpdate(
                 storyKey,
                 StoryDraft(
@@ -911,17 +1058,48 @@ object Main extends IOApp.Simple {
         )
         Ok(app)
 
-      case req @ GET -> Root / "v1" / "media" :? MediaPathParam(pathOpt) +& ThumbnailParam(_) =>
+      case req @ GET -> Root / "v1" / "media" :? MediaPathParam(pathOpt) +& ThumbnailParam(thumbnailOpt) =>
+        val wantsThumbnail = thumbnailOpt.exists(isTruthy)
+        val startedAt = System.nanoTime()
         pathOpt match {
           case None =>
+            Logger.debug(s"[Media] request rejected: missing path thumbnail=$wantsThumbnail")
             BadRequest(ErrorResponse("Missing path query parameter", "missing_path"))
           case Some(rawPath) =>
+            Logger.debug(s"[Media] request: path=$rawPath thumbnail=$wantsThumbnail")
             Db.profileRootForPath(config.database, rawPath).flatMap {
-              case None => Forbidden(ErrorResponse("Path outside active profile root", "path_not_allowed"))
+              case None =>
+                Logger.debug(s"[Media] request forbidden: path=$rawPath")
+                Forbidden(ErrorResponse("Path outside active profile root", "path_not_allowed"))
               case Some(file) =>
                 if (!Files.exists(file) || !Files.isRegularFile(file)) {
+                  Logger.debug(s"[Media] request missing file: path=$rawPath resolved=${file.toAbsolutePath.normalize()}")
                   NotFound(ErrorResponse("Media not found", "media_not_found"))
+                } else if (wantsThumbnail && isImageFile(file)) {
+                  cacheImageThumbnail(file).flatMap {
+                    case Some(thumbnail) =>
+                      val tookMs = (System.nanoTime() - startedAt) / 1000000
+                      Logger.debug(s"[Media] response image-thumbnail: path=$rawPath tookMs=$tookMs")
+                      StaticFile.fromPath(Fs2Path.fromNioPath(thumbnail), Some(req)).getOrElseF(NotFound())
+                    case None =>
+                      val tookMs = (System.nanoTime() - startedAt) / 1000000
+                      Logger.debug(s"[Media] response image-thumbnail failed: path=$rawPath tookMs=$tookMs")
+                      NotFound(ErrorResponse("Image thumbnail generation failed", "thumbnail_unavailable"))
+                  }
+                } else if (wantsThumbnail && isVideoFile(file)) {
+                  cacheVideoThumbnail(file).flatMap {
+                    case Some(thumbnail) =>
+                      val tookMs = (System.nanoTime() - startedAt) / 1000000
+                      Logger.debug(s"[Media] response video-thumbnail: path=$rawPath tookMs=$tookMs")
+                      StaticFile.fromPath(Fs2Path.fromNioPath(thumbnail), Some(req)).getOrElseF(NotFound())
+                    case None =>
+                      val tookMs = (System.nanoTime() - startedAt) / 1000000
+                      Logger.debug(s"[Media] response video-thumbnail failed: path=$rawPath tookMs=$tookMs")
+                      NotFound(ErrorResponse("Video thumbnail generation failed", "thumbnail_unavailable"))
+                  }
                 } else {
+                  val tookMs = (System.nanoTime() - startedAt) / 1000000
+                  Logger.debug(s"[Media] response original-file: path=$rawPath tookMs=$tookMs")
                   StaticFile.fromPath(Fs2Path.fromNioPath(file), Some(req)).getOrElseF(NotFound())
                 }
             }
