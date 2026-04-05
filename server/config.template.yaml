@@ -1,0 +1,77 @@
+server:
+  host: 0.0.0.0
+  port: 3001
+  cors:
+    enabled: true
+
+database:
+  engine: postgres
+  host: postgres
+  port: 5432
+  name: media_gallery
+  user: media_gallery
+  password: media_gallery_dev
+  pool:
+    min: 2
+    max: 20
+
+redis:
+  host: redis
+  port: 6379
+  db: 0
+  channels:
+    scanProgress: mg2.scan.progress
+    scanLifecycle: mg2.scan.lifecycle
+
+scan:
+  startupSync: true
+  changeDetection:
+    mode: mtime-plus-sample-hash
+    sampleSize: 128
+    fullValidationEveryRuns: 20
+  maxRecentLogs: 60
+  allowedMediaExtensions:
+    - .png
+    - .jpg
+    - .jpeg
+    - .gif
+    - .webp
+    - .mp4
+    - .webm
+
+search:
+  maxTagFilters: 80
+  maxTextLength: 200
+  defaultItemsPerPage: 18
+  maxItemsPerPage: 120
+
+viewer:
+  videoSkipSeconds: 3
+  keybinds:
+    previous:
+      - Digit1
+    next:
+      - Digit2
+    close:
+      - Escape
+
+profiles:
+  activeProfile: Artists
+  list:
+    Artists:
+      rootDirectory: /data/media/Artists
+      allowedTags:
+        - CG
+        - Image
+        - Video
+        - Furry
+        - Human
+        - AI-Generated
+      allowedExtensions:
+        - .png
+        - .jpg
+        - .jpeg
+        - .mp4
+        - .webm
+        - .webp
+        - .gif

@@ -1,0 +1,38 @@
+name: media-gallery-2
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mg2-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: media_gallery
+      POSTGRES_USER: media_gallery
+      POSTGRES_PASSWORD: media_gallery_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U media_gallery -d media_gallery"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: mg2-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pg_data:
+  redis_data:

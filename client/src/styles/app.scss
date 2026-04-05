@@ -1,0 +1,226 @@
+:root {
+  --bg: #0f1720;
+  --panel: #141f2b;
+  --line: #223247;
+  --text: #dce7f5;
+  --muted: #8ea4bf;
+  --accent: #4bb0d8;
+  --accent-strong: #67c5ea;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: radial-gradient(circle at 20% 0%, #1a2738 0%, var(--bg) 40%);
+  color: var(--text);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+.shell {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 1.2rem 1rem 2rem;
+}
+
+.top {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.actions,
+.toolbar,
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.h1 {
+  margin: 0;
+  font-size: 1.55rem;
+  font-weight: 620;
+}
+
+.muted {
+  color: var(--muted);
+  margin: 0;
+}
+
+.badge {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+}
+
+select,
+button {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.45rem 0.7rem;
+}
+
+.search {
+  min-width: 220px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.48rem 0.7rem;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+.toolbar,
+.pager,
+.progress,
+.grid,
+.empty {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 92%, black 8%);
+}
+
+.toolbar,
+.pager,
+.progress,
+.empty {
+  padding: 0.8rem;
+  margin-bottom: 0.8rem;
+}
+
+.pager {
+  justify-content: space-between;
+}
+
+.pagerText {
+  color: var(--muted);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 0.75rem;
+  padding: 0.75rem;
+}
+
+.asset {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--panel) 90%, black 10%);
+  cursor: pointer;
+}
+
+.thumb {
+  width: 100%;
+  height: 190px;
+  object-fit: cover;
+  display: block;
+  background: #0a121d;
+}
+
+.assetMeta {
+  padding: 0.5rem 0.6rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.assetMeta strong,
+.assetMeta span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progress {
+  position: relative;
+  overflow: hidden;
+}
+
+.progressBar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--accent) 35%, transparent 65%);
+}
+
+.progress .muted {
+  position: relative;
+  z-index: 1;
+}
+
+.empty {
+  text-align: center;
+}
+
+.viewer {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 8, 14, 0.94);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+}
+
+.viewerTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.viewerTitle {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-left: 1rem;
+}
+
+.viewerBody {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 0.7rem;
+}
+
+.viewerMedia {
+  max-width: 98vw;
+  max-height: 86vh;
+  object-fit: contain;
+}
+
+@media (max-width: 820px) {
+  .top {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .search {
+    min-width: 150px;
+    width: 100%;
+  }
+}

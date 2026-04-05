@@ -1,0 +1,19 @@
+{
+  "name": "media-gallery-2-client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "snabbdom": "^3.6.2"
+  },
+  "devDependencies": {
+    "sass": "^1.89.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}
